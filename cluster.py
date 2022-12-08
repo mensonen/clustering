@@ -359,6 +359,11 @@ class ClusterControl(StoppableThread):
         # remove nodes from cluster that are no longer in DB
         for node in old_nodes:
             self.log.info(f"{node} has left cluster {self.cluster_name}")
+            if node.is_self and node.is_primary:
+                self.log.warning(
+                    f"{node} is own node and primary, yet removed by someone "
+                    f"else: no longer safe to remain as primary")
+                self.stop_primary_callback()
             self._remove_node(node)
 
         # ensure that own host is still in storage, if versions match
