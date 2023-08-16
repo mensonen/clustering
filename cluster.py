@@ -17,17 +17,125 @@ A very quick start guide:
 from __future__ import annotations
 
 import datetime
+import decimal
 import json
 import logging
 import pathlib
 import random
+import re
 import select
 import socket
 import threading
 import time
 
-from distutils.version import LooseVersion
-from typing import List, Callable, Optional
+from typing import Callable
+
+
+class LooseVersion:
+    """A replacement for deprecated distutils.version.LooseVersion.
+
+    Provides functionality near-equal to the now non-existing LooseVersion
+    class provided by distutils. Exists, because the suggested replacement,
+    i.e using the `packaging` module, only does PEP 440.
+
+    Handles all the same version variations as distutils, e.g 1.5.1,
+    1.5.2b2, 161, 3.10a, 5.5beta5 etc, plus adds support for dash-separated
+    version components, e.g 3.97-beta1, 2.48-9. Also permits comparing a
+    LooseVersion instance to an integer and a float.
+
+    Also in addition to distutils, permits creating a LooseVersion instance
+    from another LooseVersion instance, i.e
+        LooseVersion("1.2") == LooseVersion(LooseVersion("1.2"))
+
+    Parsing version strings:
+    >>> # all of these work
+    >>> LooseVersion("1.30a")
+    >>> LooseVersion(1239)
+    >>> LooseVersion(1.4)
+    >>> LooseVersion(decimal.Decimal("1.99"))
+
+    Comparing version strings:
+    >>> LooseVersion("1.30a") < LooseVersion("1.30b")
+    >>> LooseVersion("26.99") < LooseVersion("27.0")
+    >>> LooseVersion("3.12") < "3.12.1"
+    >>> LooseVersion("456.9") < 457
+    """
+    component_re = re.compile(r"(\d+ | [a-z]+ | \. | -)", re.VERBOSE)
+
+    def __init__(self, vstring: str | LooseVersion = None):
+        """Create a new LooseVersion.
+
+        Args:
+            vstring: Verstion number either as a string or another instance
+                of LooseVersion
+
+        """
+        self.version_parts = []
+        """Version string split into individual, comparable components."""
+        self.version_string = self._parse(vstring)
+        """Original version string before parsing."""
+
+    def __str__(self) -> str:
+        return str(self.version_string)
+
+    def __repr__(self) -> str:
+        return f"LooseVersion<{self}>"
+
+    def _parse(self, version_string: str | None | LooseVersion) -> str | None:
+        if not version_string:
+            return None
+        if isinstance(version_string, LooseVersion):
+            self.version_parts = version_string.version_parts
+            return version_string.version_string
+        component_parts = [p for p in self.component_re.split(version_string)
+                           if p and p not in (".", "-")]
+        for i, part in enumerate(component_parts):
+            try:
+                component_parts[i] = int(part)
+            except ValueError:
+                pass
+        self.version_parts = component_parts
+
+        return version_string
+
+    def _parse_other(self, other_version: LooseVersion | str) -> LooseVersion | NotImplemented:
+        if isinstance(other_version, str):
+            return LooseVersion(other_version)
+        elif isinstance(other_version, (int, float, decimal.Decimal)):
+            return LooseVersion(str(other_version))
+        elif not isinstance(other_version, LooseVersion):
+            return NotImplemented
+        return other_version
+
+    def __eq__(self, other) -> bool:
+        other = self._parse_other(other)
+        if other is NotImplemented:
+            return other
+        return self.version_parts == other.version_parts
+
+    def __lt__(self, other) -> bool:
+        other = self._parse_other(other)
+        if other is NotImplemented:
+            return other
+        return self.version_parts < other.version_parts
+
+    def __le__(self, other) -> bool:
+        other = self._parse_other(other)
+        if other is NotImplemented:
+            return other
+        return self.version_parts <= other.version_parts
+
+    def __gt__(self, other) -> bool:
+        other = self._parse_other(other)
+        if other is NotImplemented:
+            return other
+        return self.version_parts > other.version_parts
+
+    def __ge__(self, other) -> bool:
+        other = self._parse_other(other)
+        if other is NotImplemented:
+            return other
+        return self.version_parts >= other.version_parts
 
 
 class StoppableThread(threading.Thread):
@@ -45,8 +153,8 @@ class StoppableThread(threading.Thread):
         self._stop_event.set()
 
     @property
-    def is_stopped(self):
-        return self._stop_event.isSet()
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
 
 
 class ClusterStorageBackend:
@@ -56,7 +164,7 @@ class ClusterStorageBackend:
         """Add a new node into storage."""
         raise NotImplementedError()
 
-    def get_all_nodes(self) -> List[ClusterNode]:
+    def get_all_nodes(self) -> list[ClusterNode]:
         """Retrieve all known cluster nodes from storage."""
         raise NotImplementedError()
 
@@ -68,7 +176,7 @@ class ClusterStorageBackend:
         """
         raise NotImplementedError()
 
-    def remove_nodes(self, node_names: List[str]):
+    def remove_nodes(self, node_names: list[str]):
         """Entirely deletes node data from storage.
 
         Args:
@@ -97,14 +205,14 @@ class SharedFsStorageBackend(ClusterStorageBackend):
 
     def __init__(self, storage_root: str):
         self.storage_root = storage_root
-        self.storage_path: Optional[pathlib.Path] = None
+        self.storage_path: pathlib.Path | None = None
 
     def create_node(self, node: ClusterNode):
         if not node.id:
             node.id = random.getrandbits(64)
         self.write_node(node)
 
-    def get_all_nodes(self) -> List[ClusterNode]:
+    def get_all_nodes(self) -> list[ClusterNode]:
         nodes = []
         for item in self.storage_path.iterdir():
             with item.open("r") as f:
@@ -119,7 +227,7 @@ class SharedFsStorageBackend(ClusterStorageBackend):
         except FileNotFoundError:
             pass
 
-    def remove_nodes(self, node_names: List[str]):
+    def remove_nodes(self, node_names: list[str]):
         for node_name in node_names:
             node_path = pathlib.Path(self.storage_path, node_name)
             try:
@@ -305,11 +413,11 @@ class ClusterControl(StoppableThread):
             return self.cluster.version
         return "0"
 
-    def _clean_cluster(self, dead_nodes: List[ClusterNode]):
+    def _clean_cluster(self, dead_nodes: list[ClusterNode]):
         """Update the storage and remove dead nodes."""
         self.storage_backend.remove_nodes([n.name for n in dead_nodes])
 
-    def _get_cluster_nodes(self) -> List[ClusterNode]:
+    def _get_cluster_nodes(self) -> list[ClusterNode]:
         """Get a list of cluster nodes from storage."""
         return self.storage_backend.get_all_nodes()
 
@@ -527,7 +635,7 @@ class ClusterNode:
     def __init__(self, node_name: str, node_ip: str, hb_port: int,
                  join_timestamp: datetime.datetime, version: str = "0",
                  primary: bool = False, active: bool = False, node_id: int = 0):
-        self.last_hb: Optional[float] = None
+        self.last_hb: float | None = None
         """UNIX timestamp with microseconds when last heartbeat was received."""
         self.name: str = node_name
         """Unique (within cluster) name for the node."""
@@ -606,7 +714,7 @@ class Cluster:
         self._nodes[node.name] = node
 
     @property
-    def dead_nodes(self) -> List[ClusterNode]:
+    def dead_nodes(self) -> list[ClusterNode]:
         """All nodes that have exceeded the heartbeat timeout.
 
         Returns:
@@ -631,7 +739,7 @@ class Cluster:
         return self._nodes
 
     @property
-    def oldest_node(self) -> Optional[ClusterNode]:
+    def oldest_node(self) -> ClusterNode | None:
         """The oldest (highest ranking) cluster node.
 
         Node ranking is determined based on the join timestamp, the oldest being
@@ -656,7 +764,7 @@ class Cluster:
         return None
 
     @property
-    def own_node(self) -> Optional[ClusterNode]:
+    def own_node(self) -> ClusterNode | None:
         """Get own node.
 
         Returns:
@@ -671,7 +779,7 @@ class Cluster:
         return None
 
     @property
-    def primary_node(self) -> Optional[ClusterNode]:
+    def primary_node(self) -> ClusterNode | None:
         """Get current primary node.
 
         Returns:
@@ -747,7 +855,7 @@ class Cluster:
                 self._nodes[node.name].is_primary = True
 
     @property
-    def version(self) -> Optional[str]:
+    def version(self) -> str | None:
         """Current cluster software version.
 
         The cluster node that is running the highest software version determines
