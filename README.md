@@ -14,6 +14,15 @@ The clustering works by:
  * Providing callback functions when a node becomes a primary, or loses its 
     primary status or when a node is instructed to shut down by the cluster
 
+## View documentation
+
+Install the [pdoc](https://pypi.org/project/pdoc/) package and run pdoc to view 
+HTML-formatted API documentation in your browser:
+```
+~$ pip install pdoc
+~$ pdoc -d google cluster.py
+```
+
 ## Basic usage
 
 1. From each application instance, create a cluster control instance:
@@ -57,7 +66,7 @@ The clustering works by:
     ```
 
 4. When appplication stops, let cluster control finish all background 
-    activities and then gracefully exit the cluster:
+activities and then gracefully exit the cluster:
     ```python
     cluster_ctrl.stop()
     cluster_ctrl.join(10)  # should be at least higher than the HB check interval
